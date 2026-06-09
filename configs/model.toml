@@ -1,0 +1,4 @@
+board_size = 15
+in_channels = 3
+channels = 96
+blocks = 6

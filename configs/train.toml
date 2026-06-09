@@ -1,0 +1,4 @@
+batch_size = 256
+epochs = 1
+lr = 0.001
+value_loss_weight = 1.0
