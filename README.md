@@ -40,3 +40,14 @@ The first training code is a runnable foundation, not a tuned final trainer.
 `scripts/train.py` defaults to `--num-workers 0` so it also works in restricted
 shells. On the training server, increase it after confirming the local process
 limits.
+
+Training checkpoints include model weights, optimizer state, completed epoch,
+global step, metrics, and the training config used by that run:
+
+```bash
+/root/miniconda3/envs/dmcad/bin/python scripts/train.py \
+  --data data/self_play_demo.npz \
+  --resume checkpoints/gomoku_resnet.pt \
+  --out checkpoints/gomoku_resnet.pt \
+  --epochs 5
+```

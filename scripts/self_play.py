@@ -9,6 +9,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import numpy as np
+from tqdm.auto import tqdm
 
 from gomoku.self_play import play_self_play_game
 
@@ -24,12 +25,12 @@ def main() -> None:
     all_policies = []
     all_values = []
 
-    for game_idx in range(args.games):
+    for game_idx in tqdm(range(args.games), desc="self-play games", unit="game"):
         game = play_self_play_game(simulations=args.simulations)
         all_states.append(game.states)
         all_policies.append(game.policies)
         all_values.append(game.values)
-        print(f"game={game_idx + 1} moves={len(game.values)}")
+        tqdm.write(f"game={game_idx + 1} moves={len(game.values)}")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(

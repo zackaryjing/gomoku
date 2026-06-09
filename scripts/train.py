@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
 import torch
 
 from gomoku.model import PolicyValueNet
-from gomoku.training import TrainConfig, load_npz_dataset, train_model
+from gomoku.training import TrainConfig, load_checkpoint, load_npz_dataset, save_checkpoint, train_model
 
 
 def main() -> None:
@@ -23,25 +23,37 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--out", type=Path, default=Path("checkpoints/gomoku_resnet.pt"))
+    parser.add_argument("--resume", type=Path, help="Resume model, optimizer, epoch, and step state.")
+    parser.add_argument("--save-every", type=int, default=1)
     args = parser.parse_args()
 
     dataset = load_npz_dataset(args.data)
     model = PolicyValueNet()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    state = None
+    if args.resume:
+        state = load_checkpoint(args.resume, model, optimizer, map_location=args.device)
+        print(f"resumed {args.resume} at epoch={state.epoch} step={state.global_step}")
+
+    config = TrainConfig(
+        batch_size=args.batch_size,
+        epochs=args.epochs,
+        lr=args.lr,
+        num_workers=args.num_workers,
+        save_every=args.save_every,
+    )
     metrics = train_model(
         model,
         dataset,
-        TrainConfig(
-            batch_size=args.batch_size,
-            epochs=args.epochs,
-            lr=args.lr,
-            num_workers=args.num_workers,
-        ),
+        config,
         device=args.device,
+        optimizer=optimizer,
+        state=state,
+        checkpoint_path=args.out,
     )
 
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"model": model.state_dict(), "metrics": metrics}, args.out)
-    print(metrics)
+    save_checkpoint(args.out, model, optimizer, metrics, config)
+    print(metrics.metrics)
     print(f"wrote {args.out}")
 
 
