@@ -51,3 +51,11 @@ global step, metrics, and the training config used by that run:
   --out checkpoints/gomoku_resnet.pt \
   --epochs 5
 ```
+
+To pull trained parameters from the SSH host named `school` into a local clone:
+
+```bash
+./scripts/sync_params_from_school.sh
+```
+
+Override `REMOTE_ROOT` if the server-side project path changes.
