@@ -24,6 +24,7 @@ Use the existing `dmcad` environment:
 
 - Left click: place a stone.
 - `A`: toggle human-vs-AI.
+- `S`: switch human side and restart. Human is black by default.
 - `U`: undo.
 - `R`: restart.
 - `Esc` or window close: quit.
