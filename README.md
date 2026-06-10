@@ -12,6 +12,23 @@ Use the existing `dmcad` environment:
 /root/miniconda3/envs/dmcad/bin/python apps/play_pygame.py
 ```
 
+The pygame app loads the checkpoint at startup when it exists. Before the first
+move, press `N` to switch between checkpoint policy and heuristic MCTS; after the
+first move the selection is locked until restart. UI checkpoint inference uses
+CPU by default to avoid slowdowns on busy GPUs.
+
+```bash
+/root/miniconda3/envs/dmcad/bin/python apps/play_pygame.py
+```
+
+To force a different initial selection or device:
+
+```bash
+/root/miniconda3/envs/dmcad/bin/python apps/play_pygame.py --initial-ai heuristic-mcts
+/root/miniconda3/envs/dmcad/bin/python apps/play_pygame.py --initial-ai checkpoint-policy --device cpu
+/root/miniconda3/envs/dmcad/bin/python apps/play_pygame.py --initial-ai heuristic-mcts --mcts-simulations 40
+```
+
 ## Features
 
 - 15x15 free-style Gomoku, black moves first.
@@ -24,6 +41,7 @@ Use the existing `dmcad` environment:
 
 - Left click: place a stone.
 - `A`: toggle human-vs-AI.
+- `N`: switch checkpoint policy / heuristic MCTS before the first move.
 - `S`: switch human side and restart. Human is black by default.
 - `U`: undo.
 - `R`: restart.

@@ -17,7 +17,6 @@ from gomoku.board import BLACK, WHITE, Board, GameResult
 from gomoku.encoding import encode_board
 from gomoku.mcts import MCTS
 from gomoku.model import PolicyValueNet
-from gomoku.neural_eval import NeuralEvaluator
 
 CELL = 42
 MARGIN = 48
@@ -34,6 +33,28 @@ TEXT = (236, 238, 240)
 MUTED = (170, 176, 184)
 ACCENT = (84, 160, 255)
 DEFAULT_CHECKPOINT = ROOT / "checkpoints" / "gomoku_resnet_latest.pt"
+
+
+def resolve_device(device: str) -> str:
+    if device == "auto":
+        return "cpu"
+    return device
+
+
+def print_startup_info(initial_ai: str, checkpoint: Path, device: str) -> None:
+    print("[gomoku] startup")
+    print(f"[gomoku] torch={torch.__version__}")
+    print(f"[gomoku] cuda_available={torch.cuda.is_available()}")
+    print(f"[gomoku] cuda_device_count={torch.cuda.device_count()}")
+    if torch.cuda.is_available():
+        current = torch.cuda.current_device()
+        print(f"[gomoku] cuda_current_device={current}")
+        for idx in range(torch.cuda.device_count()):
+            print(f"[gomoku] cuda_device_{idx}={torch.cuda.get_device_name(idx)}")
+    print(f"[gomoku] initial_ai={initial_ai}")
+    print(f"[gomoku] checkpoint={checkpoint}")
+    print(f"[gomoku] checkpoint_exists={checkpoint.exists()}")
+    print(f"[gomoku] resolved_device={device}")
 
 
 class PolicyCheckpointAI:
@@ -59,9 +80,10 @@ class GomokuApp:
 
     def __init__(
         self,
-        ai_backend: str = "auto",
+        initial_ai: str = "checkpoint-policy",
         checkpoint: Path = DEFAULT_CHECKPOINT,
-        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        device: str = "auto",
+        mcts_simulations: int = 20,
     ) -> None:
         pygame.init()
         pygame.display.set_caption("Gomoku AI")
@@ -72,7 +94,14 @@ class GomokuApp:
         self.board = Board(size=15)
         self.ai_enabled = True
         self.ai_player = WHITE
-        self.ai, self.ai_name = self._build_ai(ai_backend, checkpoint, device)
+        device = resolve_device(device)
+        print_startup_info(initial_ai, checkpoint, device)
+        self.ai_backends = self._load_ai_backends(checkpoint, device, mcts_simulations)
+        if initial_ai not in self.ai_backends:
+            initial_ai = "heuristic-mcts"
+        self.selected_ai_key = initial_ai
+        print(f"[gomoku] loaded_ai={', '.join(self.ai_backends)}")
+        print(f"[gomoku] selected_ai={self.ai_name}")
         self.ai_thread: threading.Thread | None = None
         self.ai_result: tuple[int, int, int] | None = None
         self.ai_error: str | None = None
@@ -86,17 +115,29 @@ class GomokuApp:
             self._draw()
             self.clock.tick(60)
 
-    def _build_ai(self, backend: str, checkpoint: Path, device: str):
-        if backend == "auto":
-            backend = "checkpoint-policy" if checkpoint.exists() else "heuristic-mcts"
-        if backend == "checkpoint-policy":
-            return PolicyCheckpointAI(checkpoint, device), f"checkpoint policy ({device})"
-        if backend == "checkpoint-mcts":
-            model = PolicyValueNet()
-            state = torch.load(checkpoint, map_location=device)
-            model.load_state_dict(state["model"])
-            return MCTS(evaluator=NeuralEvaluator(model, device=device), simulations=80), f"checkpoint MCTS ({device})"
-        return MCTS(simulations=80), "heuristic MCTS"
+    @property
+    def ai(self):
+        return self.ai_backends[self.selected_ai_key][0]
+
+    @property
+    def ai_name(self) -> str:
+        return self.ai_backends[self.selected_ai_key][1]
+
+    def _load_ai_backends(self, checkpoint: Path, device: str, mcts_simulations: int):
+        backends = {
+            "heuristic-mcts": (
+                MCTS(simulations=mcts_simulations),
+                f"heuristic MCTS ({mcts_simulations} sims)",
+            )
+        }
+        if checkpoint.exists():
+            backends["checkpoint-policy"] = (
+                PolicyCheckpointAI(checkpoint, device),
+                f"checkpoint policy ({device})",
+            )
+        else:
+            print(f"[gomoku] checkpoint_missing={checkpoint}")
+        return backends
 
     def _handle_events(self) -> None:
         for event in pygame.event.get():
@@ -116,8 +157,21 @@ class GomokuApp:
                 if event.key == pygame.K_s:
                     self.ai_player = BLACK if self.ai_player == WHITE else WHITE
                     self._restart()
+                if event.key == pygame.K_n:
+                    self._toggle_ai_backend()
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 self._handle_click(event.pos)
+
+    def _toggle_ai_backend(self) -> None:
+        if self.board.history:
+            return
+        if "checkpoint-policy" not in self.ai_backends:
+            self.selected_ai_key = "heuristic-mcts"
+            return
+        self.selected_ai_key = (
+            "heuristic-mcts" if self.selected_ai_key == "checkpoint-policy" else "checkpoint-policy"
+        )
+        print(f"[gomoku] selected_ai={self.ai_name}")
 
     def _handle_click(self, pos: tuple[int, int]) -> None:
         if self.board.is_over:
@@ -245,7 +299,10 @@ class GomokuApp:
         status = self._status_text()
         self._text(status, x + 24, 260, self.font, ACCENT)
         self._text(f"AI: {self.ai_name}", x + 24, 305, self.small_font, MUTED)
+        lock = "locked" if self.board.history else "changeable"
+        self._text(f"AI select: {lock}", x + 24, 330, self.small_font, MUTED)
 
+        self._text("N  Neural / MCTS", x + 24, HEIGHT - 210, self.small_font, MUTED)
         self._text("S  Switch side", x + 24, HEIGHT - 180, self.small_font, MUTED)
         self._text("A  Toggle AI", x + 24, HEIGHT - 150, self.small_font, MUTED)
         self._text("U  Undo", x + 24, HEIGHT - 120, self.small_font, MUTED)
@@ -275,11 +332,18 @@ class GomokuApp:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--ai-backend",
-        choices=["auto", "heuristic-mcts", "checkpoint-policy", "checkpoint-mcts"],
-        default="auto",
+        "--initial-ai",
+        choices=["heuristic-mcts", "checkpoint-policy"],
+        default="checkpoint-policy",
+        help="Initial UI selection. Press N before the first move to switch.",
     )
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--device", default="auto", help="auto defaults to cpu for responsive UI; also accepts cpu, cuda, or cuda:N")
+    parser.add_argument("--mcts-simulations", type=int, default=20)
     args = parser.parse_args()
-    GomokuApp(ai_backend=args.ai_backend, checkpoint=args.checkpoint, device=args.device).run()
+    GomokuApp(
+        initial_ai=args.initial_ai,
+        checkpoint=args.checkpoint,
+        device=args.device,
+        mcts_simulations=args.mcts_simulations,
+    ).run()
