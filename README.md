@@ -99,6 +99,18 @@ python scripts/train.py \
   --epochs 5
 ```
 
+For longer unattended runs, repeat self-play and resume training cycles:
+
+```bash
+python scripts/overnight_train.py \
+  --hours 10 \
+  --games-per-cycle 64 \
+  --simulations 40 \
+  --train-epochs 10 \
+  --checkpoint checkpoints/gomoku_resnet_latest.pt \
+  --out checkpoints/gomoku_resnet_latest.pt
+```
+
 To pull trained parameters from the SSH host named `school` into a local clone:
 
 ```bash
