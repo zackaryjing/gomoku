@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import atexit
+import json
 import sys
 import threading
 import time
@@ -35,6 +37,7 @@ TEXT = (236, 238, 240)
 MUTED = (170, 176, 184)
 ACCENT = (84, 160, 255)
 DEFAULT_CHECKPOINT = ROOT / "checkpoints" / "gomoku_resnet_latest.pt"
+DEFAULT_STATS_PATH = ROOT / "runs" / "ui_stats.jsonl"
 
 
 def resolve_device(device: str) -> str:
@@ -109,6 +112,7 @@ class GomokuApp:
         device: str = "auto",
         mcts_simulations: int = 20,
         debug: bool = False,
+        stats_path: Path = DEFAULT_STATS_PATH,
     ) -> None:
         pygame.init()
         pygame.display.set_caption("Gomoku AI")
@@ -135,14 +139,27 @@ class GomokuApp:
         self.ai_result: tuple[int, int, int, float] | None = None
         self.ai_error: str | None = None
         self.ai_generation = 0
+        self.game_started_at = time.time()
+        self.recorded_history_len: int | None = None
+        self.stats_path = stats_path
+        self.stats: dict[str, dict[str, int]] = {}
+        self.session_started_at = time.time()
+        self.summary_written = False
+        atexit.register(self.write_stats_summary)
 
     def run(self) -> None:
-        while True:
-            self._handle_events()
-            self._apply_ai_result()
-            self._start_ai_if_needed()
-            self._draw()
-            self.clock.tick(60)
+        try:
+            while True:
+                self._handle_events()
+                self._apply_ai_result()
+                self._record_finished_game_if_needed()
+                self._start_ai_if_needed()
+                self._draw()
+                self.clock.tick(60)
+        except KeyboardInterrupt:
+            self.write_stats_summary()
+            pygame.quit()
+            raise
 
     @property
     def ai(self):
@@ -178,12 +195,10 @@ class GomokuApp:
     def _handle_events(self) -> None:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                pygame.quit()
-                raise SystemExit
+                self._quit()
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    pygame.quit()
-                    raise SystemExit
+                    self._quit()
                 if event.key == pygame.K_r:
                     self._restart()
                 if event.key == pygame.K_u:
@@ -300,8 +315,11 @@ class GomokuApp:
             self.board.undo()
 
     def _restart(self) -> None:
+        self._record_finished_game_if_needed()
         self._clear_pending_ai()
         self.board = Board(size=15)
+        self.game_started_at = time.time()
+        self.recorded_history_len = None
         if self.debug:
             self._debug("restart")
             self._debug_board("after restart")
@@ -364,6 +382,7 @@ class GomokuApp:
         self._text(f"AI: {self.ai_name}", x + 24, 305, self.small_font, MUTED)
         lock = "locked" if self.board.history else "changeable"
         self._text(f"AI select: {lock}", x + 24, 330, self.small_font, MUTED)
+        self._text(self._stats_line(), x + 24, 360, self.small_font, MUTED)
 
         self._text("N  Cycle AI", x + 24, HEIGHT - 210, self.small_font, MUTED)
         self._text("S  Switch side", x + 24, HEIGHT - 180, self.small_font, MUTED)
@@ -391,6 +410,65 @@ class GomokuApp:
     def _text(self, text: str, x: int, y: int, font: pygame.font.Font, color: tuple[int, int, int]) -> None:
         self.screen.blit(font.render(text, True, color), (x, y))
 
+    def _record_finished_game_if_needed(self) -> None:
+        if not self.board.is_over:
+            return
+        if self.recorded_history_len == len(self.board.history):
+            return
+        winner = self.board.winner
+        if winner == self.ai_player:
+            outcome = "ai_win"
+        elif winner == 0:
+            outcome = "draw"
+        else:
+            outcome = "ai_loss"
+
+        bucket = self.stats.setdefault(self.selected_ai_key, {"ai_win": 0, "ai_loss": 0, "draw": 0})
+        bucket[outcome] += 1
+        self.recorded_history_len = len(self.board.history)
+        self._write_stats_event("game", outcome=outcome)
+        print(f"[gomoku] game_result mode={self.selected_ai_key} outcome={outcome} {self._stats_line()}")
+
+    def _stats_line(self) -> str:
+        total_wins = sum(item["ai_win"] for item in self.stats.values())
+        total_losses = sum(item["ai_loss"] for item in self.stats.values())
+        total_draws = sum(item["draw"] for item in self.stats.values())
+        total = total_wins + total_losses + total_draws
+        win_rate = 0.0 if total == 0 else total_wins / total * 100.0
+        return f"Session: {total_wins}-{total_losses}-{total_draws} WR {win_rate:.1f}%"
+
+    def _stats_payload(self, event: str, **extra):
+        payload = {
+            "event": event,
+            "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "session_started_at": self.session_started_at,
+            "ai_mode": self.selected_ai_key,
+            "ai_name": self.ai_name,
+            "ai_player": self._player_name(self.ai_player),
+            "moves": len(self.board.history),
+            "stats": self.stats,
+        }
+        payload.update(extra)
+        return payload
+
+    def _write_stats_event(self, event: str, **extra) -> None:
+        self.stats_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.stats_path.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(self._stats_payload(event, **extra), sort_keys=True) + "\n")
+
+    def write_stats_summary(self) -> None:
+        if self.summary_written:
+            return
+        self.summary_written = True
+        self._record_finished_game_if_needed()
+        self._write_stats_event("summary", duration_sec=time.time() - self.session_started_at)
+        print(f"[gomoku] wrote stats summary: {self.stats_path}")
+
+    def _quit(self) -> None:
+        self.write_stats_summary()
+        pygame.quit()
+        raise SystemExit
+
     def _debug(self, message: str) -> None:
         print(f"[gomoku][debug] {message}", flush=True)
 
@@ -412,6 +490,7 @@ if __name__ == "__main__":
     parser.add_argument("--mcts-simulations", type=int, default=20)
     parser.add_argument("--torch-threads", type=int, default=1)
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--stats-path", type=Path, default=DEFAULT_STATS_PATH)
     args = parser.parse_args()
     configure_torch_threads(args.torch_threads)
     GomokuApp(
@@ -420,4 +499,5 @@ if __name__ == "__main__":
         device=args.device,
         mcts_simulations=args.mcts_simulations,
         debug=args.debug,
+        stats_path=args.stats_path,
     ).run()

@@ -49,6 +49,14 @@ python apps/play_pygame.py --debug
 Debug mode prints click handling, ASCII board states, AI timing, backend choice,
 CUDA visibility, and PyTorch CPU thread settings.
 
+The UI tracks AI wins, losses, and draws for the current program session. It
+writes JSONL stats on game end and writes a final summary on window close, Esc,
+or Ctrl+C:
+
+```bash
+python apps/play_pygame.py --stats-path runs/ui_stats.jsonl
+```
+
 ## Features
 
 - 15x15 free-style Gomoku, black moves first.
