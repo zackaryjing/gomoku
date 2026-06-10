@@ -5,11 +5,12 @@ foundation. The project is intentionally small and readable for learning.
 
 ## Environment
 
-Use the existing `dmcad` environment:
+Use your local Python environment with `numpy`, `pygame`, `torch`, and `tqdm`
+installed:
 
 ```bash
-/root/miniconda3/envs/dmcad/bin/python -m pytest
-/root/miniconda3/envs/dmcad/bin/python apps/play_pygame.py
+python -m pytest
+python apps/play_pygame.py
 ```
 
 The pygame app loads the checkpoint at startup when it exists. Before the first
@@ -18,21 +19,28 @@ first move the selection is locked until restart. UI checkpoint inference uses
 CPU by default to avoid slowdowns on busy GPUs.
 
 ```bash
-/root/miniconda3/envs/dmcad/bin/python apps/play_pygame.py
+python apps/play_pygame.py
 ```
 
 To force a different initial selection or device:
 
 ```bash
-/root/miniconda3/envs/dmcad/bin/python apps/play_pygame.py --initial-ai heuristic-mcts
-/root/miniconda3/envs/dmcad/bin/python apps/play_pygame.py --initial-ai checkpoint-policy --device cpu
-/root/miniconda3/envs/dmcad/bin/python apps/play_pygame.py --initial-ai heuristic-mcts --mcts-simulations 40
+python apps/play_pygame.py --initial-ai heuristic-mcts
+python apps/play_pygame.py --initial-ai checkpoint-policy --device cpu
+python apps/play_pygame.py --initial-ai heuristic-mcts --mcts-simulations 40
 ```
+
+The default `checkpoint-policy` mode uses the neural network directly and does
+not run MCTS search. The current checkpoint is based on a very small first run,
+so it can look weak. `heuristic-mcts` does not use the checkpoint; it searches
+with a hand-written tactical evaluator. `--mcts-simulations` controls how many
+MCTS simulations are run per AI move in that mode. Larger values usually play
+better but respond more slowly.
 
 For terminal diagnostics while playing:
 
 ```bash
-/root/miniconda3/envs/dmcad/bin/python apps/play_pygame.py --debug
+python apps/play_pygame.py --debug
 ```
 
 Debug mode prints click handling, ASCII board states, AI timing, backend choice,
@@ -61,8 +69,8 @@ CUDA visibility, and PyTorch CPU thread settings.
 The first training code is a runnable foundation, not a tuned final trainer.
 
 ```bash
-/root/miniconda3/envs/dmcad/bin/python scripts/self_play.py --games 2 --out data/self_play_demo.npz
-/root/miniconda3/envs/dmcad/bin/python scripts/train.py --data data/self_play_demo.npz --epochs 1
+python scripts/self_play.py --games 2 --out data/self_play_demo.npz
+python scripts/train.py --data data/self_play_demo.npz --epochs 1
 ```
 
 `scripts/train.py` defaults to `--num-workers 0` so it also works in restricted
@@ -73,7 +81,7 @@ Training checkpoints include model weights, optimizer state, completed epoch,
 global step, metrics, and the training config used by that run:
 
 ```bash
-/root/miniconda3/envs/dmcad/bin/python scripts/train.py \
+python scripts/train.py \
   --data data/self_play_demo.npz \
   --resume checkpoints/gomoku_resnet.pt \
   --out checkpoints/gomoku_resnet.pt \
