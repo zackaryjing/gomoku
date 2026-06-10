@@ -18,6 +18,7 @@ from gomoku.board import BLACK, WHITE, Board, GameResult
 from gomoku.encoding import encode_board
 from gomoku.mcts import MCTS
 from gomoku.model import PolicyValueNet
+from gomoku.neural_eval import NeuralEvaluator
 
 CELL = 42
 MARGIN = 48
@@ -163,6 +164,13 @@ class GomokuApp:
                 PolicyCheckpointAI(checkpoint, device),
                 f"checkpoint policy ({device})",
             )
+            model = PolicyValueNet()
+            state = torch.load(checkpoint, map_location=device)
+            model.load_state_dict(state["model"])
+            backends["checkpoint-mcts"] = (
+                MCTS(evaluator=NeuralEvaluator(model, device=device), simulations=mcts_simulations),
+                f"checkpoint MCTS ({mcts_simulations} sims, {device})",
+            )
         else:
             print(f"[gomoku] checkpoint_missing={checkpoint}")
         return backends
@@ -193,12 +201,9 @@ class GomokuApp:
     def _toggle_ai_backend(self) -> None:
         if self.board.history:
             return
-        if "checkpoint-policy" not in self.ai_backends:
-            self.selected_ai_key = "heuristic-mcts"
-            return
-        self.selected_ai_key = (
-            "heuristic-mcts" if self.selected_ai_key == "checkpoint-policy" else "checkpoint-policy"
-        )
+        keys = list(self.ai_backends)
+        current_idx = keys.index(self.selected_ai_key)
+        self.selected_ai_key = keys[(current_idx + 1) % len(keys)]
         print(f"[gomoku] selected_ai={self.ai_name}")
         if self.debug:
             self._debug(f"ai backend changed before opening move: {self.ai_name}")
@@ -360,7 +365,7 @@ class GomokuApp:
         lock = "locked" if self.board.history else "changeable"
         self._text(f"AI select: {lock}", x + 24, 330, self.small_font, MUTED)
 
-        self._text("N  Neural / MCTS", x + 24, HEIGHT - 210, self.small_font, MUTED)
+        self._text("N  Cycle AI", x + 24, HEIGHT - 210, self.small_font, MUTED)
         self._text("S  Switch side", x + 24, HEIGHT - 180, self.small_font, MUTED)
         self._text("A  Toggle AI", x + 24, HEIGHT - 150, self.small_font, MUTED)
         self._text("U  Undo", x + 24, HEIGHT - 120, self.small_font, MUTED)
@@ -398,7 +403,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--initial-ai",
-        choices=["heuristic-mcts", "checkpoint-policy"],
+        choices=["heuristic-mcts", "checkpoint-policy", "checkpoint-mcts"],
         default="checkpoint-policy",
         help="Initial UI selection. Press N before the first move to switch.",
     )
