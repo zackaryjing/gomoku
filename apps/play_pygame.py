@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 import threading
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +42,16 @@ def resolve_device(device: str) -> str:
     return device
 
 
+def configure_torch_threads(torch_threads: int) -> None:
+    if torch_threads <= 0:
+        return
+    torch.set_num_threads(torch_threads)
+    try:
+        torch.set_num_interop_threads(1)
+    except RuntimeError:
+        pass
+
+
 def print_startup_info(initial_ai: str, checkpoint: Path, device: str) -> None:
     print("[gomoku] startup")
     print(f"[gomoku] torch={torch.__version__}")
@@ -55,6 +66,18 @@ def print_startup_info(initial_ai: str, checkpoint: Path, device: str) -> None:
     print(f"[gomoku] checkpoint={checkpoint}")
     print(f"[gomoku] checkpoint_exists={checkpoint.exists()}")
     print(f"[gomoku] resolved_device={device}")
+    print(f"[gomoku] torch_num_threads={torch.get_num_threads()}")
+    print(f"[gomoku] torch_num_interop_threads={torch.get_num_interop_threads()}")
+
+
+def board_to_text(board: Board) -> str:
+    symbols = {BLACK: "X", WHITE: "O", 0: "."}
+    header = "    " + " ".join(f"{col:02d}" for col in range(board.size))
+    rows = [
+        f"{row:02d}  " + "  ".join(symbols[int(board.grid[row, col])] for col in range(board.size))
+        for row in range(board.size)
+    ]
+    return "\n".join([header, *rows])
 
 
 class PolicyCheckpointAI:
@@ -84,6 +107,7 @@ class GomokuApp:
         checkpoint: Path = DEFAULT_CHECKPOINT,
         device: str = "auto",
         mcts_simulations: int = 20,
+        debug: bool = False,
     ) -> None:
         pygame.init()
         pygame.display.set_caption("Gomoku AI")
@@ -94,6 +118,7 @@ class GomokuApp:
         self.board = Board(size=15)
         self.ai_enabled = True
         self.ai_player = WHITE
+        self.debug = debug
         device = resolve_device(device)
         print_startup_info(initial_ai, checkpoint, device)
         self.ai_backends = self._load_ai_backends(checkpoint, device, mcts_simulations)
@@ -102,8 +127,11 @@ class GomokuApp:
         self.selected_ai_key = initial_ai
         print(f"[gomoku] loaded_ai={', '.join(self.ai_backends)}")
         print(f"[gomoku] selected_ai={self.ai_name}")
+        if self.debug:
+            print("[gomoku][debug] enabled")
+            self._debug_board("initial board")
         self.ai_thread: threading.Thread | None = None
-        self.ai_result: tuple[int, int, int] | None = None
+        self.ai_result: tuple[int, int, int, float] | None = None
         self.ai_error: str | None = None
         self.ai_generation = 0
 
@@ -172,6 +200,8 @@ class GomokuApp:
             "heuristic-mcts" if self.selected_ai_key == "checkpoint-policy" else "checkpoint-policy"
         )
         print(f"[gomoku] selected_ai={self.ai_name}")
+        if self.debug:
+            self._debug(f"ai backend changed before opening move: {self.ai_name}")
 
     def _handle_click(self, pos: tuple[int, int]) -> None:
         if self.board.is_over:
@@ -181,12 +211,19 @@ class GomokuApp:
 
         coord = self._pixel_to_coord(*pos)
         if coord is None:
+            if self.debug:
+                self._debug(f"ignored click outside board/snap area: pixel={pos}")
             return
         row, col = coord
         try:
             self.board.play(row, col)
             self._clear_pending_ai()
+            if self.debug:
+                self._debug(f"human move: player={self._player_name(-self.ai_player)} coord=({row}, {col})")
+                self._debug_board("after human move")
         except ValueError:
+            if self.debug:
+                self._debug(f"ignored illegal click: pixel={pos} coord=({row}, {col})")
             return
 
     def _start_ai_if_needed(self) -> None:
@@ -200,6 +237,11 @@ class GomokuApp:
         generation = self.ai_generation
         self.ai_result = None
         self.ai_error = None
+        if self.debug:
+            self._debug(
+                f"ai start: backend={self.ai_name} player={self._player_name(self.ai_player)} "
+                f"move_count={expected_history_len}"
+            )
 
         # Search runs off the pygame thread, so the human stone is drawn immediately.
         self.ai_thread = threading.Thread(
@@ -211,15 +253,19 @@ class GomokuApp:
 
     def _compute_ai_move(self, board: Board, expected_history_len: int, generation: int) -> None:
         try:
+            started = time.perf_counter()
             action = self.ai.select_action(board, temperature=0.0)
-            self.ai_result = (generation, expected_history_len, action)
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            self.ai_result = (generation, expected_history_len, action, elapsed_ms)
         except Exception as exc:  # pragma: no cover - surfaced in the UI.
             self.ai_error = str(exc)
+            if self.debug:
+                self._debug(f"ai error: {exc}")
 
     def _apply_ai_result(self) -> None:
         if self.ai_result is None:
             return
-        generation, expected_history_len, action = self.ai_result
+        generation, expected_history_len, action, elapsed_ms = self.ai_result
         self.ai_result = None
         if generation != self.ai_generation:
             return
@@ -230,6 +276,10 @@ class GomokuApp:
         if action not in self.board.legal_actions():
             return
         self.board.play_action(action)
+        if self.debug:
+            row, col = self.board.action_to_coord(action)
+            self._debug(f"ai move applied: coord=({row}, {col}) elapsed_ms={elapsed_ms:.2f}")
+            self._debug_board("after ai move")
 
     def _undo(self) -> None:
         self._clear_pending_ai()
@@ -242,6 +292,9 @@ class GomokuApp:
     def _restart(self) -> None:
         self._clear_pending_ai()
         self.board = Board(size=15)
+        if self.debug:
+            self._debug("restart")
+            self._debug_board("after restart")
 
     def _clear_pending_ai(self) -> None:
         self.ai_generation += 1
@@ -328,6 +381,13 @@ class GomokuApp:
     def _text(self, text: str, x: int, y: int, font: pygame.font.Font, color: tuple[int, int, int]) -> None:
         self.screen.blit(font.render(text, True, color), (x, y))
 
+    def _debug(self, message: str) -> None:
+        print(f"[gomoku][debug] {message}", flush=True)
+
+    def _debug_board(self, title: str) -> None:
+        self._debug(title)
+        print(board_to_text(self.board), flush=True)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -340,10 +400,14 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
     parser.add_argument("--device", default="auto", help="auto defaults to cpu for responsive UI; also accepts cpu, cuda, or cuda:N")
     parser.add_argument("--mcts-simulations", type=int, default=20)
+    parser.add_argument("--torch-threads", type=int, default=1)
+    parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
+    configure_torch_threads(args.torch_threads)
     GomokuApp(
         initial_ai=args.initial_ai,
         checkpoint=args.checkpoint,
         device=args.device,
         mcts_simulations=args.mcts_simulations,
+        debug=args.debug,
     ).run()

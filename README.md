@@ -29,6 +29,15 @@ To force a different initial selection or device:
 /root/miniconda3/envs/dmcad/bin/python apps/play_pygame.py --initial-ai heuristic-mcts --mcts-simulations 40
 ```
 
+For terminal diagnostics while playing:
+
+```bash
+/root/miniconda3/envs/dmcad/bin/python apps/play_pygame.py --debug
+```
+
+Debug mode prints click handling, ASCII board states, AI timing, backend choice,
+CUDA visibility, and PyTorch CPU thread settings.
+
 ## Features
 
 - 15x15 free-style Gomoku, black moves first.
