@@ -138,8 +138,8 @@ class GomokuApp:
     def run(self) -> None:
         while True:
             self._handle_events()
-            self._start_ai_if_needed()
             self._apply_ai_result()
+            self._start_ai_if_needed()
             self._draw()
             self.clock.tick(60)
 
@@ -229,6 +229,8 @@ class GomokuApp:
     def _start_ai_if_needed(self) -> None:
         if not self.ai_enabled or self.board.is_over or self.board.current_player != self.ai_player:
             return
+        if self.ai_result is not None:
+            return
         if self.ai_thread and self.ai_thread.is_alive():
             return
 
@@ -257,6 +259,9 @@ class GomokuApp:
             action = self.ai.select_action(board, temperature=0.0)
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             self.ai_result = (generation, expected_history_len, action, elapsed_ms)
+            if self.debug:
+                row, col = board.action_to_coord(action)
+                self._debug(f"ai done: coord=({row}, {col}) elapsed_ms={elapsed_ms:.2f}")
         except Exception as exc:  # pragma: no cover - surfaced in the UI.
             self.ai_error = str(exc)
             if self.debug:
