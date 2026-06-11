@@ -57,6 +57,7 @@ def train_model(
     model.to(device)
     if optimizer is None:
         optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
+    move_optimizer_to_device(optimizer, device)
     train_state = state or TrainState()
     metrics = train_state.metrics or {"loss": 0.0, "policy_loss": 0.0, "value_loss": 0.0}
 
@@ -144,6 +145,14 @@ def load_checkpoint(
         global_step=int(checkpoint.get("global_step", 0)),
         metrics=dict(checkpoint.get("metrics", {})),
     )
+
+
+def move_optimizer_to_device(optimizer: torch.optim.Optimizer, device: str | torch.device) -> None:
+    target = torch.device(device)
+    for state in optimizer.state.values():
+        for key, value in state.items():
+            if torch.is_tensor(value):
+                state[key] = value.to(target)
 
 
 def soft_cross_entropy(logits: torch.Tensor, target_policy: torch.Tensor) -> torch.Tensor:
