@@ -17,7 +17,13 @@ class NeuralEvaluator:
 
     @torch.no_grad()
     def evaluate(self, board: Board) -> tuple[np.ndarray, float]:
-        state = torch.from_numpy(encode_board(board)).unsqueeze(0).to(self.device)
+        policies, values = self.evaluate_batch([board])
+        return policies[0], values[0]
+
+    @torch.no_grad()
+    def evaluate_batch(self, boards: list[Board]) -> tuple[list[np.ndarray], list[float]]:
+        state = torch.from_numpy(np.stack([encode_board(board) for board in boards], axis=0)).to(self.device)
         logits, value = self.model(state)
-        policy = torch.softmax(logits, dim=1).squeeze(0).cpu().numpy()
-        return policy.astype(np.float64), float(value.item())
+        policies = torch.softmax(logits, dim=1).cpu().numpy().astype(np.float64)
+        values = value.squeeze(1).cpu().numpy().astype(np.float64)
+        return [policy for policy in policies], [float(item) for item in values]

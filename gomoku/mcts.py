@@ -76,6 +76,9 @@ class MCTS:
 
     def _expand(self, node: Node, board: Board) -> None:
         priors, _ = self.evaluator.evaluate(board)
+        self._expand_with_priors(node, board, priors)
+
+    def _expand_with_priors(self, node: Node, board: Board, priors: np.ndarray) -> None:
         legal = board.legal_actions()
         if not legal:
             return
@@ -104,8 +107,8 @@ class MCTS:
     def _evaluate_leaf(self, node: Node, board: Board) -> float:
         if board.is_over:
             return result_value_for_player(board.result, board.current_player)
-        self._expand(node, board)
-        _, value = self.evaluator.evaluate(board)
+        priors, value = self.evaluator.evaluate(board)
+        self._expand_with_priors(node, board, priors)
         return value
 
     def _backpropagate(self, search_path: list[Node], value: float, leaf_player: int) -> None:

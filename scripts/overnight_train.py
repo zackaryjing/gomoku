@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
+import multiprocessing as mp
 import os
 import signal
 import sys
@@ -18,6 +19,7 @@ import torch
 from tqdm.auto import tqdm
 
 from gomoku.arena import evaluate_against_baseline
+from gomoku.batched_eval import STOP_REQUEST, RemoteBatchedEvaluator, run_batched_evaluator_server
 from gomoku.mcts import MCTS
 from gomoku.model import PolicyValueNet
 from gomoku.neural_eval import NeuralEvaluator
@@ -26,6 +28,8 @@ from gomoku.training import TrainConfig, TrainState, load_checkpoint, save_check
 
 WORKER_EVALUATOR = None
 WORKER_SIMULATIONS = 40
+WORKER_REQUEST_QUEUE = None
+WORKER_RESPONSE_QUEUE = None
 
 
 def main() -> None:
@@ -37,6 +41,8 @@ def main() -> None:
     parser.add_argument("--self-play-workers", type=int, default=1)
     parser.add_argument("--self-play-device", default="cpu")
     parser.add_argument("--self-play-torch-threads", type=int, default=1)
+    parser.add_argument("--self-play-batch-size", type=int, default=32)
+    parser.add_argument("--self-play-batch-timeout-ms", type=float, default=2.0)
     parser.add_argument("--train-epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--num-workers", type=int, default=0)
@@ -100,6 +106,8 @@ def main() -> None:
             self_play_device=args.self_play_device,
             workers=args.self_play_workers,
             torch_threads=args.self_play_torch_threads,
+            batch_size=args.self_play_batch_size,
+            batch_timeout_ms=args.self_play_batch_timeout_ms,
             stop_check=lambda: stop_requested or time.time() >= deadline,
         )
         if len(values) == 0:
@@ -182,6 +190,8 @@ def generate_cycle_data(
     self_play_device: str,
     workers: int,
     torch_threads: int,
+    batch_size: int,
+    batch_timeout_ms: float,
     stop_check,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[int]]:
     if workers > 1:
@@ -193,6 +203,8 @@ def generate_cycle_data(
             self_play_device=self_play_device,
             workers=workers,
             torch_threads=torch_threads,
+            batch_size=batch_size,
+            batch_timeout_ms=batch_timeout_ms,
             stop_check=stop_check,
         )
 
@@ -234,6 +246,8 @@ def generate_cycle_data_parallel(
     self_play_device: str,
     workers: int,
     torch_threads: int,
+    batch_size: int,
+    batch_timeout_ms: float,
     stop_check,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[int]]:
     all_states = []
@@ -242,23 +256,71 @@ def generate_cycle_data_parallel(
     moves = []
     max_workers = max(1, workers)
 
-    with ProcessPoolExecutor(
-        max_workers=max_workers,
-        initializer=init_self_play_worker,
-        initargs=(evaluator_mode, str(checkpoint_path), self_play_device, simulations, torch_threads),
-    ) as executor:
-        futures = []
-        for game_idx in range(games):
-            if stop_check():
-                break
-            futures.append(executor.submit(play_one_self_play_worker, game_idx))
+    use_batched_evaluator = evaluator_mode == "checkpoint-mcts" and batch_size > 1
+    ctx = mp.get_context("spawn") if use_batched_evaluator else None
+    request_queue = ctx.Queue() if ctx is not None else None
+    response_queues = [ctx.Queue() for _ in range(max_workers)] if ctx is not None else None
+    worker_slot_counter = ctx.Value("i", 0) if ctx is not None else None
+    worker_slot_lock = ctx.Lock() if ctx is not None else None
+    evaluator_process = None
 
-        for future in tqdm(as_completed(futures), total=len(futures), desc="cycle self-play", unit="game"):
-            game = future.result()
-            all_states.append(game.states)
-            all_policies.append(game.policies)
-            all_values.append(game.values)
-            moves.append(int(len(game.values)))
+    if use_batched_evaluator:
+        evaluator_process = ctx.Process(
+            target=run_batched_evaluator_server,
+            args=(
+                request_queue,
+                response_queues,
+                str(checkpoint_path),
+                self_play_device,
+                batch_size,
+                batch_timeout_ms,
+                torch_threads,
+            ),
+        )
+        evaluator_process.start()
+        print(
+            "[gomoku] self-play batched evaluator "
+            f"workers={max_workers} batch_size={batch_size} timeout_ms={batch_timeout_ms} "
+            f"device={self_play_device}"
+        )
+
+    try:
+        with ProcessPoolExecutor(
+            max_workers=max_workers,
+            mp_context=ctx,
+            initializer=init_self_play_worker,
+            initargs=(
+                evaluator_mode,
+                str(checkpoint_path),
+                self_play_device,
+                simulations,
+                torch_threads,
+                request_queue,
+                response_queues,
+                worker_slot_counter,
+                worker_slot_lock,
+                use_batched_evaluator,
+            ),
+        ) as executor:
+            futures = []
+            for game_idx in range(games):
+                if stop_check():
+                    break
+                futures.append(executor.submit(play_one_self_play_worker, game_idx))
+
+            for future in tqdm(as_completed(futures), total=len(futures), desc="cycle self-play", unit="game"):
+                game = future.result()
+                all_states.append(game.states)
+                all_policies.append(game.policies)
+                all_values.append(game.values)
+                moves.append(int(len(game.values)))
+    finally:
+        if evaluator_process is not None:
+            request_queue.put(STOP_REQUEST)
+            evaluator_process.join(timeout=30)
+            if evaluator_process.is_alive():
+                evaluator_process.terminate()
+                evaluator_process.join(timeout=5)
 
     if not all_values:
         return (
@@ -282,16 +344,30 @@ def init_self_play_worker(
     self_play_device: str,
     simulations: int,
     torch_threads: int,
+    request_queue=None,
+    response_queues=None,
+    worker_slot_counter=None,
+    worker_slot_lock=None,
+    use_batched_evaluator: bool = False,
 ) -> None:
-    global WORKER_EVALUATOR, WORKER_SIMULATIONS
+    global WORKER_EVALUATOR, WORKER_REQUEST_QUEUE, WORKER_RESPONSE_QUEUE, WORKER_SIMULATIONS
     WORKER_SIMULATIONS = simulations
+    WORKER_REQUEST_QUEUE = request_queue
+    WORKER_RESPONSE_QUEUE = None
     if torch_threads > 0:
         torch.set_num_threads(torch_threads)
         try:
             torch.set_num_interop_threads(1)
         except RuntimeError:
             pass
-    WORKER_EVALUATOR = build_self_play_evaluator(Path(checkpoint_path), self_play_device, evaluator_mode)
+    if use_batched_evaluator:
+        with worker_slot_lock:
+            worker_slot = worker_slot_counter.value
+            worker_slot_counter.value += 1
+        WORKER_RESPONSE_QUEUE = response_queues[worker_slot]
+        WORKER_EVALUATOR = RemoteBatchedEvaluator(request_queue, WORKER_RESPONSE_QUEUE, worker_slot)
+    else:
+        WORKER_EVALUATOR = build_self_play_evaluator(Path(checkpoint_path), self_play_device, evaluator_mode)
 
 
 def play_one_self_play_worker(game_idx: int):

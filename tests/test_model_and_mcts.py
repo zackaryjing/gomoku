@@ -5,6 +5,7 @@ from gomoku.board import Board
 from gomoku.encoding import encode_board
 from gomoku.mcts import MCTS
 from gomoku.model import PolicyValueNet
+from gomoku.neural_eval import NeuralEvaluator
 
 
 def test_encoding_shape():
@@ -19,6 +20,16 @@ def test_model_output_shapes():
     policy, value = model(torch.zeros(2, 3, 15, 15))
     assert policy.shape == (2, 225)
     assert value.shape == (2, 1)
+
+
+def test_neural_evaluator_supports_batch():
+    model = PolicyValueNet(channels=16, blocks=1)
+    evaluator = NeuralEvaluator(model, device="cpu")
+    policies, values = evaluator.evaluate_batch([Board(), Board()])
+    assert len(policies) == 2
+    assert len(values) == 2
+    assert policies[0].shape == (225,)
+    assert np.isclose(policies[0].sum(), 1.0)
 
 
 def test_mcts_only_legal_actions_and_non_mutating():

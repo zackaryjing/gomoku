@@ -119,8 +119,10 @@ python scripts/overnight_train.py \
   --hours 10 \
   --self-play-evaluator checkpoint-mcts \
   --self-play-workers 16 \
-  --self-play-device cpu \
-  --games-per-cycle 32 \
+  --self-play-device cuda \
+  --self-play-batch-size 32 \
+  --self-play-batch-timeout-ms 2 \
+  --games-per-cycle 64 \
   --simulations 40 \
   --train-epochs 10 \
   --arena-games 20 \
@@ -130,9 +132,17 @@ python scripts/overnight_train.py \
 
 `--self-play-workers` runs self-play games in parallel processes. This is the
 main throughput lever because MCTS game generation is much slower than the GPU
-training step. For checkpoint-MCTS self-play, `--self-play-device cpu` keeps
-worker inference off the training GPU; use CUDA here only if you deliberately
-want many worker processes sharing a GPU.
+training step. For checkpoint-MCTS self-play with multiple workers,
+`--self-play-batch-size > 1` starts one shared neural evaluator process. Workers
+send MCTS leaf states to that process, which batches several positions into one
+policy/value network forward pass. `--self-play-device` selects the device for
+that shared evaluator in batched mode. Use `--self-play-batch-size 1` to disable
+the shared evaluator and make each worker load its own checkpoint.
+
+`--self-play-batch-timeout-ms` is the maximum time the evaluator waits for more
+leaf states before running a partial batch. A small value keeps workers
+responsive; a larger value may improve GPU utilization but can add search
+latency.
 
 For a standalone arena check:
 
