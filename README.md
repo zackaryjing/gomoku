@@ -118,6 +118,8 @@ current checkpoint MCTS and run arena checks after each cycle:
 python scripts/overnight_train.py \
   --hours 10 \
   --self-play-evaluator checkpoint-mcts \
+  --self-play-workers 16 \
+  --self-play-device cpu \
   --games-per-cycle 32 \
   --simulations 40 \
   --train-epochs 10 \
@@ -125,6 +127,12 @@ python scripts/overnight_train.py \
   --arena-simulations 40 \
   --target-win-rate 0.55
 ```
+
+`--self-play-workers` runs self-play games in parallel processes. This is the
+main throughput lever because MCTS game generation is much slower than the GPU
+training step. For checkpoint-MCTS self-play, `--self-play-device cpu` keeps
+worker inference off the training GPU; use CUDA here only if you deliberately
+want many worker processes sharing a GPU.
 
 For a standalone arena check:
 

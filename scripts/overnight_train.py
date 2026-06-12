@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
+import os
 import signal
 import sys
 import time
@@ -22,6 +24,9 @@ from gomoku.neural_eval import NeuralEvaluator
 from gomoku.self_play import play_self_play_game
 from gomoku.training import TrainConfig, TrainState, load_checkpoint, save_checkpoint, train_model
 
+WORKER_EVALUATOR = None
+WORKER_SIMULATIONS = 40
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run repeated self-play and resume training cycles.")
@@ -29,6 +34,9 @@ def main() -> None:
     parser.add_argument("--games-per-cycle", type=int, default=64)
     parser.add_argument("--simulations", type=int, default=40)
     parser.add_argument("--self-play-evaluator", choices=["heuristic", "checkpoint-mcts"], default="heuristic")
+    parser.add_argument("--self-play-workers", type=int, default=1)
+    parser.add_argument("--self-play-device", default="cpu")
+    parser.add_argument("--self-play-torch-threads", type=int, default=1)
     parser.add_argument("--train-epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--num-workers", type=int, default=0)
@@ -72,6 +80,7 @@ def main() -> None:
         "[gomoku] overnight loop "
         f"hours={args.hours} games_per_cycle={args.games_per_cycle} "
         f"simulations={args.simulations} self_play_evaluator={args.self_play_evaluator} "
+        f"self_play_workers={args.self_play_workers} self_play_device={args.self_play_device} "
         f"train_epochs={args.train_epochs} device={args.device}"
     )
 
@@ -82,11 +91,15 @@ def main() -> None:
         data_path = args.data_dir / f"self_play_cycle_{cycle:04d}_{run_id}.npz"
 
         print(f"[gomoku] cycle={cycle} self-play start -> {data_path}")
-        self_play_evaluator = build_self_play_evaluator(model, args.device, args.self_play_evaluator)
+        self_play_checkpoint = args.out if args.out.exists() else args.checkpoint
         states, policies, values, moves = generate_cycle_data(
             games=args.games_per_cycle,
             simulations=args.simulations,
-            evaluator=self_play_evaluator,
+            evaluator_mode=args.self_play_evaluator,
+            checkpoint_path=self_play_checkpoint,
+            self_play_device=args.self_play_device,
+            workers=args.self_play_workers,
+            torch_threads=args.self_play_torch_threads,
             stop_check=lambda: stop_requested or time.time() >= deadline,
         )
         if len(values) == 0:
@@ -164,9 +177,26 @@ def main() -> None:
 def generate_cycle_data(
     games: int,
     simulations: int,
-    evaluator,
+    evaluator_mode: str,
+    checkpoint_path: Path,
+    self_play_device: str,
+    workers: int,
+    torch_threads: int,
     stop_check,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[int]]:
+    if workers > 1:
+        return generate_cycle_data_parallel(
+            games=games,
+            simulations=simulations,
+            evaluator_mode=evaluator_mode,
+            checkpoint_path=checkpoint_path,
+            self_play_device=self_play_device,
+            workers=workers,
+            torch_threads=torch_threads,
+            stop_check=stop_check,
+        )
+
+    evaluator = build_self_play_evaluator(checkpoint_path, self_play_device, evaluator_mode)
     all_states = []
     all_policies = []
     all_values = []
@@ -196,8 +226,85 @@ def generate_cycle_data(
     )
 
 
-def build_self_play_evaluator(model: PolicyValueNet, device: str, mode: str):
+def generate_cycle_data_parallel(
+    games: int,
+    simulations: int,
+    evaluator_mode: str,
+    checkpoint_path: Path,
+    self_play_device: str,
+    workers: int,
+    torch_threads: int,
+    stop_check,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[int]]:
+    all_states = []
+    all_policies = []
+    all_values = []
+    moves = []
+    max_workers = max(1, workers)
+
+    with ProcessPoolExecutor(
+        max_workers=max_workers,
+        initializer=init_self_play_worker,
+        initargs=(evaluator_mode, str(checkpoint_path), self_play_device, simulations, torch_threads),
+    ) as executor:
+        futures = []
+        for game_idx in range(games):
+            if stop_check():
+                break
+            futures.append(executor.submit(play_one_self_play_worker, game_idx))
+
+        for future in tqdm(as_completed(futures), total=len(futures), desc="cycle self-play", unit="game"):
+            game = future.result()
+            all_states.append(game.states)
+            all_policies.append(game.policies)
+            all_values.append(game.values)
+            moves.append(int(len(game.values)))
+
+    if not all_values:
+        return (
+            np.empty((0, 3, 15, 15), dtype=np.float32),
+            np.empty((0, 225), dtype=np.float32),
+            np.empty((0,), dtype=np.float32),
+            moves,
+        )
+
+    return (
+        np.concatenate(all_states, axis=0).astype(np.float32),
+        np.concatenate(all_policies, axis=0).astype(np.float32),
+        np.concatenate(all_values, axis=0).astype(np.float32),
+        moves,
+    )
+
+
+def init_self_play_worker(
+    evaluator_mode: str,
+    checkpoint_path: str,
+    self_play_device: str,
+    simulations: int,
+    torch_threads: int,
+) -> None:
+    global WORKER_EVALUATOR, WORKER_SIMULATIONS
+    WORKER_SIMULATIONS = simulations
+    if torch_threads > 0:
+        torch.set_num_threads(torch_threads)
+        try:
+            torch.set_num_interop_threads(1)
+        except RuntimeError:
+            pass
+    WORKER_EVALUATOR = build_self_play_evaluator(Path(checkpoint_path), self_play_device, evaluator_mode)
+
+
+def play_one_self_play_worker(game_idx: int):
+    seed = (os.getpid() * 1_000_003 + game_idx + int(time.time() * 1000)) % (2**32 - 1)
+    np.random.seed(seed)
+    return play_self_play_game(simulations=WORKER_SIMULATIONS, evaluator=WORKER_EVALUATOR)
+
+
+def build_self_play_evaluator(checkpoint_path: Path, device: str, mode: str):
     if mode == "checkpoint-mcts":
+        model = PolicyValueNet()
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(checkpoint["model"])
         return NeuralEvaluator(model, device=device)
     return None
 
