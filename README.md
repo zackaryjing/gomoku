@@ -111,6 +111,27 @@ python scripts/overnight_train.py \
   --out checkpoints/gomoku_resnet_latest.pt
 ```
 
+To push toward beating the built-in heuristic MCTS, generate self-play with the
+current checkpoint MCTS and run arena checks after each cycle:
+
+```bash
+python scripts/overnight_train.py \
+  --hours 10 \
+  --self-play-evaluator checkpoint-mcts \
+  --games-per-cycle 32 \
+  --simulations 40 \
+  --train-epochs 10 \
+  --arena-games 20 \
+  --arena-simulations 40 \
+  --target-win-rate 0.55
+```
+
+For a standalone arena check:
+
+```bash
+python scripts/arena.py --games 20 --ai-simulations 40 --baseline-simulations 40
+```
+
 To pull trained parameters from the SSH host named `school` into a local clone:
 
 ```bash

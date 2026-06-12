@@ -6,7 +6,7 @@ import numpy as np
 
 from gomoku.board import Board, result_value_for_player
 from gomoku.encoding import encode_board
-from gomoku.mcts import MCTS
+from gomoku.mcts import Evaluator, MCTS
 
 
 @dataclass
@@ -16,9 +16,14 @@ class SelfPlayGame:
     values: np.ndarray
 
 
-def play_self_play_game(board_size: int = 15, simulations: int = 80, temperature_moves: int = 20) -> SelfPlayGame:
+def play_self_play_game(
+    board_size: int = 15,
+    simulations: int = 80,
+    temperature_moves: int = 20,
+    evaluator: Evaluator | None = None,
+) -> SelfPlayGame:
     board = Board(size=board_size)
-    mcts = MCTS(simulations=simulations)
+    mcts = MCTS(evaluator=evaluator, simulations=simulations)
     examples: list[tuple[np.ndarray, np.ndarray, int]] = []
 
     while not board.is_over:
